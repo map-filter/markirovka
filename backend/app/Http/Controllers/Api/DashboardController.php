@@ -43,7 +43,7 @@ class DashboardController extends Controller
     {
         $rows = Code::where('organization_id', $org->id)
             ->whereIn('status', [Code::RECEIVED, Code::PRINTED])
-            ->where('expires_at', '<=', now()->addDays(config('ismpt.remind_days')))
+            ->whereBetween('expires_at', [now(), now()->addDays(config('ismpt.remind_days'))])
             ->selectRaw('code_order_id, min(expires_at) as expires_at, count(*) as total')
             ->groupBy('code_order_id')
             ->orderBy('expires_at')

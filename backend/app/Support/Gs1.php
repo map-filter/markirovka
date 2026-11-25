@@ -76,21 +76,16 @@ class Gs1
      */
     private static function parseHumanReadable(string $code): array
     {
-        preg_match_all('/\((\d{2,4})\)([^(]*)/', $code, $matches, PREG_SET_ORDER);
-        $ai = [];
-        foreach ($matches as $match) {
-            $ai[$match[1]] = $match[2];
-        }
-        if (! isset($ai['01'], $ai['21'])) {
+        if (! preg_match('/^\(01\)(\d{14})\(21\)(.+?)(?:\(91\)(.{4})(?:\(92\)(.+))?)?$/s', $code, $m)) {
             throw new InvalidArgumentException('Код не похож на GS1: нет (01) GTIN и (21) серийного номера');
         }
 
         return [
-            'gtin' => $ai['01'],
-            'serial' => $ai['21'],
-            'cis' => '01'.$ai['01'].'21'.$ai['21'],
-            'key' => $ai['91'] ?? null,
-            'crypto' => $ai['92'] ?? null,
+            'gtin' => $m[1],
+            'serial' => $m[2],
+            'cis' => '01'.$m[1].'21'.$m[2],
+            'key' => ($m[3] ?? '') !== '' ? $m[3] : null,
+            'crypto' => ($m[4] ?? '') !== '' ? $m[4] : null,
         ];
     }
 

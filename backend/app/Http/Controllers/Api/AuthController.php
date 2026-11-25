@@ -22,7 +22,7 @@ class AuthController extends Controller
             'password' => ['required', 'string'],
         ]);
 
-        $user = User::where('email', mb_strtolower($data['email']))->first();
+        $user = User::whereRaw('lower(email) = ?', [mb_strtolower($data['email'])])->first();
         if (! $user || ! Hash::check($data['password'], $user->password)) {
             throw ValidationException::withMessages(['email' => 'Неверный email или пароль']);
         }

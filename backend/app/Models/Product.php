@@ -17,6 +17,10 @@ class Product extends Model
 
     public const ATTRIBUTES = ['gtin', 'name', 'model', 'size', 'color', 'composition', 'tnved', 'category', 'brand', 'country'];
 
+    protected $attributes = [
+        'nkt_status' => self::NKT_UNCHECKED,
+    ];
+
     protected $fillable = [
         'organization_id', 'gtin', 'name', 'model', 'size', 'color', 'composition', 'tnved', 'category', 'brand', 'country',
         'nkt_status', 'nkt_checked_at', 'nkt_payload',
