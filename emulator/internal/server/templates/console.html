@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="5">
+<title>Эмулятор ИС МПТ</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--text:#1c2430;--muted:#6b7480;--line:#e3e6ea;--accent:#1f6feb;--ok:#1a7f37;--bad:#cf222e;--warn:#9a6700;--wait:#57606a}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1318;--card:#171c22;--text:#e6e9ed;--muted:#9aa4af;--line:#2a313a;--accent:#4c8dff;--ok:#3fb950;--bad:#f85149;--warn:#d29922;--wait:#8b949e}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+header{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;padding:16px;border-bottom:1px solid var(--line);background:var(--card)}
+h1{font-size:18px;margin:0}
+h2{font-size:15px;margin:0 0 10px}
+main{max-width:1280px;margin:0 auto;padding:16px;display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(min(100%,560px),1fr))}
+section{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;min-width:0}
+section.wide{grid-column:1/-1}
+.muted{color:var(--muted)}
+.scroll{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top;white-space:nowrap}
+td.wrap{white-space:normal;min-width:180px}
+th{color:var(--muted);font-weight:600}
+code{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace}
+.ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}.wait{color:var(--wait)}
+.badge{display:inline-block;padding:1px 8px;border-radius:999px;border:1px solid currentColor;font-size:12px}
+.stats{display:flex;flex-wrap:wrap;gap:10px}
+.stat{flex:1 1 120px;border:1px solid var(--line);border-radius:8px;padding:10px}
+.stat b{display:block;font-size:22px}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+form{margin:0}
+button{font:inherit;padding:6px 12px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--text);cursor:pointer}
+button:hover{border-color:var(--accent)}
+button.danger{color:var(--bad);border-color:var(--bad)}
+dl{display:grid;grid-template-columns:max-content 1fr;gap:4px 12px;margin:0}
+dt{color:var(--muted)}dd{margin:0;overflow-wrap:anywhere}
+ul.errs{margin:4px 0 0;padding-left:16px}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Эмулятор ИС МПТ True API</h1>
+    <div class="muted">Время эмулятора: {{t .EmuNow}} (UTC+5), сдвиг: {{offset .OffsetSec}}, аннулирование через {{.AnnulDays}} дн.</div>
+  </div>
+  <div class="row">
+    <form method="post" action="/emu/api/time"><input type="hidden" name="days" value="1"><button>+1 день</button></form>
+    <form method="post" action="/emu/api/time"><input type="hidden" name="days" value="7"><button>+7 дней</button></form>
+    <form method="post" action="/emu/api/time"><input type="hidden" name="days" value="30"><button>+30 дней</button></form>
+    <form method="post" action="/emu/api/time"><input type="hidden" name="action" value="reset"><button>Сбросить сдвиг</button></form>
+    <form method="post" action="/emu/reset" onsubmit="return confirm('Сбросить эмулятор к начальным данным?')"><button class="danger">Сбросить эмулятор</button></form>
+  </div>
+</header>
+<main>
+  <section>
+    <h2>Участник</h2>
+    {{range .Participants}}
+    <dl>
+      <dt>БИН</dt><dd><code>{{.BIN}}</code></dd>
+      <dt>Название</dt><dd>{{.Name}}</dd>
+      <dt>Адрес</dt><dd>{{.Address}}</dd>
+    </dl>
+    {{else}}<p class="muted">Нет участников</p>{{end}}
+  </section>
+
+  <section>
+    <h2>Коды маркировки: {{.TotalCodes}}</h2>
+    <div class="stats">
+      {{range .CodeCounts}}<div class="stat"><span class="muted">{{.Title}}</span><b>{{.Count}}</b><code class="muted">{{.Status}}</code></div>{{end}}
+    </div>
+  </section>
+
+  <section class="wide">
+    <h2>Карточки НКТ: {{len .Products}}</h2>
+    <div class="scroll"><table>
+      <tr><th>GTIN</th><th>Наименование</th><th>Модель</th><th>Размер</th><th>ТН ВЭД</th>{{range $.Statuses}}<th title="{{statusTitle .}}">{{.}}</th>{{end}}</tr>
+      {{range .Products}}{{$p := .}}
+      <tr><td><code>{{.GTIN}}</code></td><td class="wrap">{{.Name}}</td><td>{{.Model}}</td><td>{{.Size}}</td><td>{{.TNVED}}</td>{{range $.Statuses}}<td>{{count $p.Codes .}}</td>{{end}}</tr>
+      {{end}}
+    </table></div>
+  </section>
+
+  <section class="wide">
+    <h2>Заказы кодов</h2>
+    {{if .Orders}}<div class="scroll"><table>
+      <tr><th>UUID</th><th>Вид</th><th>GTIN</th><th>Товар</th><th>Кол-во</th><th>Статус</th><th>Создан</th><th>Готов</th></tr>
+      {{range .Orders}}
+      <tr><td><code title="{{.UUID}}">{{short .UUID}}</code></td><td>{{if eq .Kind "EMISSION"}}эмиссия{{else}}список{{end}}</td><td><code>{{.GTIN}}</code></td><td class="wrap">{{.Product}}</td><td>{{.Quantity}}</td><td><span class="badge {{docClass .Status}}">{{.Status}}</span></td><td>{{t .CreatedAt}}</td><td>{{t .ReadyAt}}</td></tr>
+      {{end}}
+    </table></div>{{else}}<p class="muted">Заказов пока нет</p>{{end}}
+  </section>
+
+  <section class="wide">
+    <h2>Последние документы</h2>
+    {{if .Documents}}<div class="scroll"><table>
+      <tr><th>Номер</th><th>Тип</th><th>Статус</th><th>КМ</th><th>Получен</th><th>Результат</th></tr>
+      {{range .Documents}}
+      <tr><td><code title="{{.ID}}">{{.Number}}</code></td><td>{{.TypeTitle}}<br><code class="muted">{{.Type}}</code></td><td><span class="badge {{docClass .Status}}">{{.Status}}</span></td><td>{{.Codes}}</td><td>{{t .ReceivedAt}}</td>
+      <td class="wrap">{{if .ErrorMessage}}<span class="bad">{{.ErrorMessage}}</span><ul class="errs">{{range $i, $e := .CisErrors}}{{if lt $i 5}}<li><code>{{$e.Cis}}</code>: {{$e.ErrorMessage}}</li>{{end}}{{end}}</ul>{{else if eq .Status "CHECKED_OK"}}<span class="ok">Оформлен</span>{{else}}<span class="wait">Проверяется</span>{{end}}</td></tr>
+      {{end}}
+    </table></div>{{else}}<p class="muted">Документов пока нет</p>{{end}}
+  </section>
+
+  <section class="wide">
+    <h2>Последние вызовы API</h2>
+    {{if .Log}}<div class="scroll"><table>
+      <tr><th>Время</th><th>Метод</th><th>Путь</th><th>Код</th><th>мс</th></tr>
+      {{range .Log}}
+      <tr><td>{{t .Time}}</td><td>{{.Method}}</td><td><code>{{.Path}}</code></td><td class="{{httpClass .Status}}">{{.Status}}</td><td>{{.Duration}}</td></tr>
+      {{end}}
+    </table></div>{{else}}<p class="muted">Вызовов пока нет</p>{{end}}
+  </section>
+</main>
+</body>
+</html>
