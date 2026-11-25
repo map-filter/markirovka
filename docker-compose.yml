@@ -1,0 +1,131 @@
+name: markirovka
+
+x-php: &php
+  image: markirovka-php:dev
+  build:
+    context: .
+    dockerfile: docker/php/Dockerfile
+  env_file: .env
+  environment: &php-env
+    APP_ENV: local
+    DB_CONNECTION: pgsql
+    DB_HOST: markirovka-db
+    DB_PORT: 5432
+    REDIS_HOST: markirovka-redis
+    QUEUE_CONNECTION: redis
+    CACHE_STORE: redis
+    SEED_FILE: /seed/seed.json
+  volumes:
+    - ./backend:/var/www/backend
+    - ./seed:/seed:ro
+  depends_on:
+    markirovka-db:
+      condition: service_healthy
+    markirovka-redis:
+      condition: service_started
+  restart: unless-stopped
+
+services:
+  markirovka-db:
+    container_name: markirovka-db
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${DB_DATABASE}
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres/init-test-db.sql:/docker-entrypoint-initdb.d/10-test-db.sql:ro
+    ports:
+      - "127.0.0.1:8302:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME} -d ${DB_DATABASE}"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  markirovka-redis:
+    container_name: markirovka-redis
+    image: redis:7-alpine
+    volumes:
+      - redisdata:/data
+    restart: unless-stopped
+
+  markirovka-app:
+    <<: *php
+    container_name: markirovka-app
+    command: ["sh", "/var/www/backend/docker-entrypoint.sh"]
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/app-ready"]
+      interval: 3s
+      timeout: 3s
+      retries: 200
+
+  markirovka-worker:
+    <<: *php
+    container_name: markirovka-worker
+    command: ["php", "artisan", "queue:work", "--sleep=1", "--tries=3", "--timeout=120"]
+    depends_on:
+      markirovka-app:
+        condition: service_healthy
+
+  markirovka-scheduler:
+    <<: *php
+    container_name: markirovka-scheduler
+    command: ["php", "artisan", "schedule:work"]
+    depends_on:
+      markirovka-app:
+        condition: service_healthy
+
+  markirovka-emulator:
+    container_name: markirovka-emulator
+    image: markirovka-emulator:dev
+    build: ./emulator
+    environment:
+      EMU_ADDR: ":8080"
+      EMU_SEED: /seed/seed.json
+      EMU_STATE_FILE: /data/state.json
+      EMU_ANNUL_DAYS: ${ISMPT_ANNUL_DAYS:-30}
+      EMU_ACCEPT_EMULATED_SIGNATURE: "true"
+    volumes:
+      - ./seed:/seed:ro
+      - emudata:/data
+    ports:
+      - "127.0.0.1:8303:8080"
+    restart: unless-stopped
+
+  markirovka-gateway:
+    container_name: markirovka-gateway
+    image: markirovka-gateway:dev
+    build:
+      context: .
+      dockerfile: docker/gateway/Dockerfile
+    volumes:
+      - ./backend/public:/var/www/backend/public:ro
+    ports:
+      - "127.0.0.1:8301:80"
+    depends_on:
+      markirovka-app:
+        condition: service_healthy
+    restart: unless-stopped
+
+  markirovka-agent:
+    container_name: markirovka-agent
+    image: markirovka-agent:dev
+    build: ./agent
+    environment:
+      SERVER_URL: http://markirovka-gateway
+      AGENT_TOKEN: ${AGENT_TOKEN}
+      PRINTER: file:///prints
+    user: "1000:1000"
+    volumes:
+      - ./var/prints:/prints
+    depends_on:
+      - markirovka-gateway
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
+  emudata:

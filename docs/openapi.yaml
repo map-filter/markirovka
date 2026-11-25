@@ -1,0 +1,1158 @@
+openapi: 3.0.3
+info:
+  title: Маркировка за день, API кабинета
+  version: 0.1.0
+  description: |
+    REST API кабинета: товары, заказ кодов в ИС МПТ, печать этикеток, ввод в оборот, выгрузка в 1С.
+    Авторизация кабинета: `Authorization: Bearer <token>` из /api/auth/login.
+    Интеграция с 1С: `Authorization: Bearer <integration token>` из настроек организации.
+    Агент печати: `Authorization: Bearer <agent token>`.
+servers:
+  - url: /api
+tags:
+  - name: Вход
+  - name: ИС МПТ
+  - name: Товары
+  - name: Заказы кодов
+  - name: Коды
+  - name: Этикетки и печать
+  - name: Документы
+  - name: Журнал
+  - name: Настройки
+  - name: Агент печати
+  - name: Интеграция 1С
+security:
+  - bearer: []
+paths:
+  /auth/login:
+    post:
+      tags: [Вход]
+      security: []
+      summary: Вход по email и паролю
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, example: admin@kendir.test }
+                password: { type: string, example: portal2026 }
+      responses:
+        '200':
+          description: Токен
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  user: { $ref: '#/components/schemas/User' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /auth/logout:
+    post:
+      tags: [Вход]
+      summary: Выход (отзыв токена)
+      responses:
+        '204': { description: OK }
+  /me:
+    get:
+      tags: [Вход]
+      summary: Текущий пользователь и организация
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: '#/components/schemas/User' }
+                  organization: { $ref: '#/components/schemas/Organization' }
+  /config:
+    get:
+      tags: [Вход]
+      security: []
+      summary: Режимы работы (эмулятор или ИС МПТ, подпись NCALayer или эмуляция)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sign_mode: { type: string, enum: [ncalayer, emulate] }
+                  ismpt_mode: { type: string, enum: [emulator, production] }
+                  ismpt_base_url: { type: string }
+                  emulator_console_url: { type: string, nullable: true }
+                  annul_days: { type: integer, example: 30 }
+  /dashboard:
+    get:
+      tags: [Журнал]
+      summary: Дашборд «что сделать сегодня»
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ismpt: { $ref: '#/components/schemas/IsmptSession' }
+                  stats:
+                    type: object
+                    properties:
+                      products: { type: integer }
+                      orders_in_progress: { type: integer }
+                      codes: { $ref: '#/components/schemas/CodeCounts' }
+                  todo:
+                    type: array
+                    items: { $ref: '#/components/schemas/TodoItem' }
+                  expiring:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        product: { $ref: '#/components/schemas/ProductShort' }
+                        order_id: { type: integer }
+                        order_number: { type: string }
+                        count: { type: integer }
+                        expires_at: { type: string, format: date-time }
+                        days_left: { type: integer }
+                  recent_operations:
+                    type: array
+                    items: { $ref: '#/components/schemas/Operation' }
+  /ismpt/session:
+    get:
+      tags: [ИС МПТ]
+      summary: Состояние подключения к ИС МПТ (токен True API живёт 10 часов)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IsmptSession' }
+  /ismpt/auth/key:
+    post:
+      tags: [ИС МПТ]
+      summary: Получить данные для подписи (GET /auth/key в True API)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  uuid: { type: string }
+                  data: { type: string, description: Строка, которую нужно подписать ЭЦП (CMS, вложенная подпись) }
+  /ismpt/auth/sign-in:
+    post:
+      tags: [ИС МПТ]
+      summary: Передать подпись и получить токен (POST /auth/simpleSignIn)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [uuid, signature]
+              properties:
+                uuid: { type: string }
+                signature: { type: string, description: CMS в base64 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IsmptSession' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /sign/emulate:
+    post:
+      tags: [ИС МПТ]
+      summary: Эмулированная подпись (только при SIGN_MODE=emulate)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [data_base64]
+              properties:
+                data_base64: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  signature: { type: string }
+        '403': { description: Режим эмуляции выключен }
+  /products:
+    get:
+      tags: [Товары]
+      summary: Список товаров
+      parameters:
+        - { name: search, in: query, schema: { type: string } }
+        - { name: category, in: query, schema: { type: string } }
+        - { name: page, in: query, schema: { type: integer } }
+        - { name: per_page, in: query, schema: { type: integer, default: 25 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Product' }
+                  meta: { $ref: '#/components/schemas/PageMeta' }
+    post:
+      tags: [Товары]
+      summary: Создать товар
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProductInput' }
+      responses:
+        '201':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Product' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /products/categories:
+    get:
+      tags: [Товары]
+      summary: Список категорий товаров организации
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { type: string } }
+  /products/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: integer } }
+    get:
+      tags: [Товары]
+      summary: Товар
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Product' }
+    put:
+      tags: [Товары]
+      summary: Изменить товар
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProductInput' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Product' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+    delete:
+      tags: [Товары]
+      summary: Удалить товар (только без кодов)
+      responses:
+        '204': { description: OK }
+        '409': { description: У товара есть коды }
+  /products/{id}/nkt-check:
+    post:
+      tags: [Товары]
+      summary: Проверить карточку в НКТ (GET /product/gtin и /products/info)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Product' }
+                  nkt: { type: object, nullable: true, description: Ответ НКТ }
+  /products/{id}/nkt-register:
+    post:
+      tags: [Товары]
+      summary: Зарегистрировать карточку в НКТ (только эмулятор)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Product' }
+        '409': { description: Недоступно для настоящей ИС МПТ }
+  /products/import:
+    post:
+      tags: [Товары]
+      summary: Импорт товаров из CSV или XLSX (по GTIN: создать или обновить)
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  created: { type: integer }
+                  updated: { type: integer }
+                  errors:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        row: { type: integer }
+                        message: { type: string }
+  /products/import/template:
+    get:
+      tags: [Товары]
+      summary: Шаблон CSV для импорта
+      responses:
+        '200':
+          description: CSV (UTF-8 с BOM, разделитель ;)
+          content:
+            text/csv: {}
+  /code-orders:
+    get:
+      tags: [Заказы кодов]
+      summary: Заказы кодов
+      parameters:
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/OrderStatus' } }
+        - { name: page, in: query, schema: { type: integer } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/CodeOrder' }
+                  meta: { $ref: '#/components/schemas/PageMeta' }
+    post:
+      tags: [Заказы кодов]
+      summary: Заказать коды (уходит в ИС МПТ через очередь)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [product_id, quantity]
+              properties:
+                product_id: { type: integer }
+                quantity: { type: integer, minimum: 1, maximum: 10000 }
+      responses:
+        '201':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/CodeOrder' }
+        '409': { description: Нет подключения к ИС МПТ или товар не найден в НКТ }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /code-orders/{id}:
+    get:
+      tags: [Заказы кодов]
+      summary: Заказ
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/CodeOrder' }
+  /code-orders/{id}/refresh:
+    post:
+      tags: [Заказы кодов]
+      summary: Запросить статус заказа в ИС МПТ сейчас
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/CodeOrder' }
+  /codes:
+    get:
+      tags: [Коды]
+      summary: Коды маркировки
+      parameters:
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/CodeStatus' } }
+        - { name: product_id, in: query, schema: { type: integer } }
+        - { name: order_id, in: query, schema: { type: integer } }
+        - { name: search, in: query, schema: { type: string }, description: Часть серийного номера или GTIN }
+        - { name: page, in: query, schema: { type: integer } }
+        - { name: per_page, in: query, schema: { type: integer, default: 50 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Code' }
+                  meta: { $ref: '#/components/schemas/PageMeta' }
+  /codes/summary:
+    get:
+      tags: [Коды]
+      summary: Количество кодов по товарам и статусам
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        product: { $ref: '#/components/schemas/ProductShort' }
+                        counts: { $ref: '#/components/schemas/CodeCounts' }
+  /label-templates:
+    get:
+      tags: [Этикетки и печать]
+      summary: Шаблоны этикеток
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/LabelTemplate' }
+    post:
+      tags: [Этикетки и печать]
+      summary: Создать шаблон
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LabelTemplateInput' }
+      responses:
+        '201':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/LabelTemplate' }
+  /label-templates/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: integer } }
+    put:
+      tags: [Этикетки и печать]
+      summary: Изменить шаблон
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LabelTemplateInput' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/LabelTemplate' }
+    delete:
+      tags: [Этикетки и печать]
+      summary: Удалить шаблон
+      responses:
+        '204': { description: OK }
+  /label-templates/{id}/preview:
+    get:
+      tags: [Этикетки и печать]
+      summary: PDF-образец этикетки с тестовым кодом
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - { name: product_id, in: query, schema: { type: integer } }
+      responses:
+        '200':
+          description: PDF
+          content:
+            application/pdf: {}
+  /print-jobs:
+    get:
+      tags: [Этикетки и печать]
+      summary: Задания печати
+      parameters:
+        - { name: page, in: query, schema: { type: integer } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/PrintJob' }
+                  meta: { $ref: '#/components/schemas/PageMeta' }
+    post:
+      tags: [Этикетки и печать]
+      summary: Пакетная печать
+      description: |
+        Коды выбираются списком code_ids или по товару/заказу (первые quantity кодов со статусом «получен»).
+        target=download: файл скачивается в браузере. target=agent: задание уходит агенту печати.
+        После создания задания коды переходят в статус «напечатан» (для агента после подтверждения печати).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [template_id, format, target]
+              properties:
+                template_id: { type: integer }
+                format: { type: string, enum: [pdf, zpl] }
+                target: { type: string, enum: [download, agent] }
+                agent_id: { type: integer, nullable: true }
+                code_ids: { type: array, items: { type: integer } }
+                product_id: { type: integer }
+                order_id: { type: integer }
+                quantity: { type: integer }
+                reprint: { type: boolean, default: false, description: Разрешить повторную печать уже напечатанных кодов }
+      responses:
+        '201':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/PrintJob' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /print-jobs/{id}:
+    get:
+      tags: [Этикетки и печать]
+      summary: Задание печати
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/PrintJob' }
+  /print-jobs/{id}/download:
+    get:
+      tags: [Этикетки и печать]
+      summary: Скачать PDF или ZPL
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - { name: token, in: query, schema: { type: string }, description: Токен кабинета, если нельзя передать заголовок }
+      responses:
+        '200':
+          description: Файл
+          content:
+            application/pdf: {}
+            text/plain: {}
+  /documents:
+    get:
+      tags: [Документы]
+      summary: Документы, отправленные в ИС МПТ
+      parameters:
+        - { name: page, in: query, schema: { type: integer } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Document' }
+                  meta: { $ref: '#/components/schemas/PageMeta' }
+  /documents/prepare:
+    post:
+      tags: [Документы]
+      summary: Сформировать документ (отчёт о нанесении или ввод в оборот) для подписи
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type]
+              properties:
+                type: { type: string, enum: [application, introduction] }
+                code_ids: { type: array, items: { type: integer } }
+                product_id: { type: integer }
+                order_id: { type: integer }
+      responses:
+        '201':
+          description: Документ создан, его body_base64 нужно подписать (открепленная CMS)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Document' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /documents/{id}:
+    get:
+      tags: [Документы]
+      summary: Документ
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Document' }
+  /documents/{id}/submit:
+    post:
+      tags: [Документы]
+      summary: Отправить подписанный документ в ИС МПТ
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [signature]
+              properties:
+                signature: { type: string, description: Открепленная CMS в base64 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Document' }
+  /operations:
+    get:
+      tags: [Журнал]
+      summary: Журнал операций
+      parameters:
+        - { name: type, in: query, schema: { type: string } }
+        - { name: level, in: query, schema: { type: string, enum: [info, warning, error] } }
+        - { name: page, in: query, schema: { type: integer } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Operation' }
+                  meta: { $ref: '#/components/schemas/PageMeta' }
+  /settings:
+    get:
+      tags: [Настройки]
+      summary: Настройки организации
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  organization: { $ref: '#/components/schemas/Organization' }
+                  integration_token_set: { type: boolean }
+                  agents:
+                    type: array
+                    items: { $ref: '#/components/schemas/PrintAgent' }
+    put:
+      tags: [Настройки]
+      summary: Изменить реквизиты организации
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                address: { type: string }
+                phone: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  organization: { $ref: '#/components/schemas/Organization' }
+  /settings/integration-token:
+    post:
+      tags: [Настройки]
+      summary: Выпустить новый токен для 1С (старый перестаёт работать)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string, description: Показывается один раз }
+  /agents:
+    post:
+      tags: [Настройки]
+      summary: Подключить агент печати
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+      responses:
+        '201':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/PrintAgent' }
+                  token: { type: string, description: Показывается один раз }
+  /agents/{id}:
+    delete:
+      tags: [Настройки]
+      summary: Отключить агент
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '204': { description: OK }
+  /agent/jobs/next:
+    get:
+      tags: [Агент печати]
+      summary: Следующее задание (long-polling)
+      parameters:
+        - { name: wait, in: query, schema: { type: integer, default: 20, maximum: 25 } }
+      responses:
+        '200':
+          description: Задание
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string }
+                  format: { type: string, enum: [zpl, pdf, raw] }
+                  copies: { type: integer }
+                  printer: { type: string }
+                  payload_base64: { type: string }
+        '204': { description: Нет заданий }
+  /agent/jobs/{id}/ack:
+    post:
+      tags: [Агент печати]
+      summary: Результат печати
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status: { type: string, enum: [printed, failed] }
+                error: { type: string }
+      responses:
+        '204': { description: OK }
+  /agent/heartbeat:
+    post:
+      tags: [Агент печати]
+      summary: Агент на связи
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                version: { type: string }
+                hostname: { type: string }
+                printer: { type: string }
+      responses:
+        '204': { description: OK }
+  /integration/v1/codes:
+    get:
+      tags: [Интеграция 1С]
+      summary: Коды для 1С (JSON или CSV)
+      parameters:
+        - { name: format, in: query, schema: { type: string, enum: [json, csv], default: json } }
+        - { name: order, in: query, schema: { type: string }, description: Номер заказа кодов, например З-000003 }
+        - { name: gtin, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/CodeStatus' } }
+        - { name: updated_since, in: query, schema: { type: string, format: date-time } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  organization: { type: string }
+                  bin: { type: string }
+                  generated_at: { type: string, format: date-time }
+                  codes:
+                    type: array
+                    items: { $ref: '#/components/schemas/IntegrationCode' }
+            text/csv: {}
+  /integration/v1/codes/statuses:
+    post:
+      tags: [Интеграция 1С]
+      summary: Статусы по списку кодов (для проставления в документе 1С)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                codes: { type: array, items: { type: string }, description: Коды целиком (с GS) или в виде (01)..(21).. }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  codes:
+                    type: array
+                    items: { $ref: '#/components/schemas/IntegrationCode' }
+                  not_found: { type: array, items: { type: string } }
+  /integration/v1/orders:
+    get:
+      tags: [Интеграция 1С]
+      summary: Заказы кодов для выбора в обработке 1С
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  orders:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        number: { type: string }
+                        gtin: { type: string }
+                        product: { type: string }
+                        quantity: { type: integer }
+                        status: { type: string }
+                        created_at: { type: string, format: date-time }
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+  responses:
+    ValidationError:
+      description: Ошибка проверки
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              message: { type: string }
+              errors:
+                type: object
+                additionalProperties:
+                  type: array
+                  items: { type: string }
+  schemas:
+    PageMeta:
+      type: object
+      properties:
+        current_page: { type: integer }
+        last_page: { type: integer }
+        per_page: { type: integer }
+        total: { type: integer }
+    User:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        email: { type: string }
+        role: { type: string, enum: [admin, operator] }
+    Organization:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        bin: { type: string }
+        address: { type: string }
+        phone: { type: string, nullable: true }
+    IsmptSession:
+      type: object
+      properties:
+        connected: { type: boolean }
+        expires_at: { type: string, format: date-time, nullable: true }
+        mode: { type: string, enum: [emulator, production] }
+    CodeStatus:
+      type: string
+      enum: [received, printed, applied, introduced, annulled]
+      description: получен, напечатан, нанесён, в обороте, аннулирован
+    OrderStatus:
+      type: string
+      enum: [new, sent, processing, ready, failed]
+    CodeCounts:
+      type: object
+      properties:
+        received: { type: integer }
+        printed: { type: integer }
+        applied: { type: integer }
+        introduced: { type: integer }
+        annulled: { type: integer }
+    TodoItem:
+      type: object
+      properties:
+        kind: { type: string, enum: [connect_ismpt, nkt_missing, order_ready, print_codes, apply_codes, introduce_codes, expiring_codes, order_failed, document_rejected] }
+        severity: { type: string, enum: [info, warning, danger] }
+        title: { type: string }
+        description: { type: string }
+        count: { type: integer, nullable: true }
+        action:
+          type: object
+          properties:
+            label: { type: string }
+            route: { type: string, description: Имя маршрута кабинета }
+            query: { type: object, additionalProperties: true }
+    ProductShort:
+      type: object
+      properties:
+        id: { type: integer }
+        gtin: { type: string }
+        name: { type: string }
+    ProductInput:
+      type: object
+      required: [gtin, name]
+      properties:
+        gtin: { type: string, description: 13 или 14 цифр, проверяется контрольная цифра }
+        name: { type: string }
+        model: { type: string }
+        size: { type: string }
+        color: { type: string }
+        composition: { type: string }
+        tnved: { type: string, description: 10 цифр }
+        category: { type: string }
+        brand: { type: string }
+        country: { type: string }
+    Product:
+      allOf:
+        - $ref: '#/components/schemas/ProductInput'
+        - type: object
+          properties:
+            id: { type: integer }
+            nkt_status: { type: string, enum: [unchecked, found, not_found] }
+            nkt_checked_at: { type: string, format: date-time, nullable: true }
+            codes: { $ref: '#/components/schemas/CodeCounts' }
+            created_at: { type: string, format: date-time }
+    CodeOrder:
+      type: object
+      properties:
+        id: { type: integer }
+        number: { type: string, example: З-000001 }
+        product: { $ref: '#/components/schemas/ProductShort' }
+        quantity: { type: integer }
+        status: { $ref: '#/components/schemas/OrderStatus' }
+        ismpt_order_id: { type: string, nullable: true }
+        error: { type: string, nullable: true }
+        codes: { $ref: '#/components/schemas/CodeCounts' }
+        created_at: { type: string, format: date-time }
+        ready_at: { type: string, format: date-time, nullable: true }
+        expires_at: { type: string, format: date-time, nullable: true, description: Дата аннулирования неиспользованных кодов }
+    Code:
+      type: object
+      properties:
+        id: { type: integer }
+        code: { type: string, description: Полный код, разделитель GS = \u001d }
+        code_hr: { type: string, example: '(01)04870712001017(21)abc...(91)EE10(92)...' }
+        gtin: { type: string }
+        serial: { type: string }
+        status: { $ref: '#/components/schemas/CodeStatus' }
+        product: { $ref: '#/components/schemas/ProductShort' }
+        order_id: { type: integer }
+        order_number: { type: string }
+        emitted_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        printed_at: { type: string, format: date-time, nullable: true }
+        applied_at: { type: string, format: date-time, nullable: true }
+        introduced_at: { type: string, format: date-time, nullable: true }
+    LabelFields:
+      type: object
+      properties:
+        datamatrix: { type: boolean }
+        gtin: { type: boolean }
+        name: { type: boolean }
+        size: { type: boolean }
+        composition: { type: boolean }
+        manufacturer: { type: boolean }
+        serial: { type: boolean }
+    LabelTemplateInput:
+      type: object
+      required: [name, size, fields]
+      properties:
+        name: { type: string }
+        size: { type: string, enum: ['58x40', '43x25'] }
+        fields: { $ref: '#/components/schemas/LabelFields' }
+        font_scale: { type: number, minimum: 0.7, maximum: 1.4, default: 1 }
+        is_default: { type: boolean }
+    LabelTemplate:
+      allOf:
+        - $ref: '#/components/schemas/LabelTemplateInput'
+        - type: object
+          properties:
+            id: { type: integer }
+            width_mm: { type: integer }
+            height_mm: { type: integer }
+    PrintJob:
+      type: object
+      properties:
+        id: { type: integer }
+        template: { $ref: '#/components/schemas/LabelTemplate' }
+        format: { type: string, enum: [pdf, zpl] }
+        target: { type: string, enum: [download, agent] }
+        status: { type: string, enum: [ready, queued, sent, printed, failed] }
+        codes_count: { type: integer }
+        agent: { $ref: '#/components/schemas/PrintAgent' }
+        error: { type: string, nullable: true }
+        download_url: { type: string }
+        created_at: { type: string, format: date-time }
+    PrintAgent:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        hostname: { type: string, nullable: true }
+        printer: { type: string, nullable: true }
+        version: { type: string, nullable: true }
+        last_seen_at: { type: string, format: date-time, nullable: true }
+        online: { type: boolean }
+    Document:
+      type: object
+      properties:
+        id: { type: integer }
+        type: { type: string, enum: [application, introduction] }
+        type_label: { type: string, example: Отчёт о нанесении }
+        status: { type: string, enum: [draft, sent, processing, accepted, rejected, failed] }
+        codes_count: { type: integer }
+        body_base64: { type: string, description: Что подписывать }
+        ismpt_document_id: { type: string, nullable: true }
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              code: { type: string }
+              message: { type: string }
+        created_at: { type: string, format: date-time }
+        processed_at: { type: string, format: date-time, nullable: true }
+    Operation:
+      type: object
+      properties:
+        id: { type: integer }
+        created_at: { type: string, format: date-time }
+        user: { type: string, nullable: true }
+        type: { type: string, example: order.ready }
+        level: { type: string, enum: [info, warning, error] }
+        message: { type: string }
+    IntegrationCode:
+      type: object
+      properties:
+        code: { type: string, description: Полный код с GS }
+        code_base64: { type: string, description: Код в base64, чтобы GS не потерялся при передаче }
+        code_hr: { type: string }
+        gtin: { type: string }
+        serial: { type: string }
+        status: { type: string, description: Код статуса }
+        status_label: { type: string, example: В обороте }
+        product: { type: string }
+        order: { type: string }
+        updated_at: { type: string, format: date-time }
